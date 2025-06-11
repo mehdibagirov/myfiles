@@ -1,0 +1,70 @@
+1. Əsas hazırlıqlar (hər iki node-da)
+1.1 Hostnames və /etc/hosts faylına əlavə
+Misal:
+echo "192.168.1.10 master-node" | sudo tee -a /etc/hosts
+echo "192.168.1.11 worker-node" | sudo tee -a /etc/hosts
+1.2 Swap deaktiv et
+sudo swapoff -a
+sudo sed -i '/swap/d' /etc/fstab
+1.3 SELinux permissive etmək
+sudo setenforce 0
+sudo sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+1.4 Firewall-u söndür (test üçün, sonradan düzgün portlar açılmalıdır)
+sudo systemctl disable --now firewalld
+________________________________________
+2. containerd quraşdırılması (hər iki node)
+2.1 containerd repo əlavə et və quraşdır
+sudo yum install -y yum-utils device-mapper-persistent-data lvm2
+sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo yum install -y containerd.io
+2.2 containerd konfiqurasiya et
+sudo mkdir -p /etc/containerd
+sudo containerd config default | sudo tee /etc/containerd/config.toml
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+
+3. Kubernetes repo əlavə et və paketləri quraşdır (hər iki node)
+cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/repodata/repomd.xml.key
+EOF
+
+sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+sudo systemctl enable --now kubelet
+
+4. Kernel modullarını aktivləşdir (hər iki node)
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF
+
+sudo modprobe br_netfilter
+
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+EOF
+
+sudo sysctl --system
+
+5. Master node-da Kubernetes clusterini yarat
+5.1 kubeadm init əmrini containerd üçün əlavə opsiyalarla işə sal:
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket /run/containerd/containerd.sock
+
+6. kubectl üçün konfiqurasiya (master node-da)
+mkdir -p $HOME/.kube
+sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+7. Pod network əlavə et (Flannel nümunəsi)
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+8. Worker node-u master-ə qoş
+Master node-da kubeadm init bitdikdən sonra göstərilən join əmrini worker node-da işlət:
+sudo kubeadm join <MASTER_IP>:6443 --token <TOKEN> --discovery-token-ca-cert-hash sha256:<HASH> --cri-socket /run/containerd/containerd.sock
+Əgər əmr itibsə, master node-da aşağıdakı əmrlə yenidən ala bilərsən:
+kubeadm token create --print-join-command
+
